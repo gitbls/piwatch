@@ -1,0 +1,190 @@
+#!/usr/bin/python3
+#
+# V1.0
+#
+# Check if there's a newer RasPiOS edition and notify if so
+#
+# https://github.com/gitbls/piwatch
+#
+# Usage:
+#    piwatch [switches]
+#
+# Switches (all optional)
+#
+#    --date yyyy-mm-dd
+#      * Check for new editions after given date. If not specified, date in /usr/local/etc/piwatch is used.
+#        If --date is specified, /usr/local/etc/piwatch will not be updated unless --update
+#    --edition name
+#      * Name of edition to check
+#    --mailfrom email-from-address
+#      * Where the mail should come from
+#        Format: either mailaddr@domain.com or "firstname lastname<person@somewhere.com>"
+#    --mailto email-to-address
+#      * What email address to send to
+#        Both --mailfrom and --mailto must be specified, or mail will not be sent
+#    --logger
+#      * Log to the system log if there is an update
+#    --update
+#      * Update /usr/local/etc/piwatch even if --date was specified
+#    --verbose
+#      * Print some extra goop on the console
+#
+# Typical use:
+#
+#  Check for update, send mail if there's an update 
+#    piwatch --mailfrom myemail@domain.com --mailto myemail.domain.com
+#
+#  Check for update, log in the system log if there is one
+#    piwatch --logger
+#
+#  Check for update, report on console only, and update /usr/local/etc/piwatch
+#   piwatch --update --date 2022-09-24
+#
+#  Check for update and exit with status (0: new update, 4: no new update, 1: error)
+#   piwatch
+#
+#  In all cases, exit status:
+#   0: Updated IMGs available
+#   1: Some sort of error
+#   4: No updated IMG available
+#
+import argparse
+import datetime
+import os
+import subprocess
+import sys
+import tempfile
+
+def dosystem(docmd):
+    r = subprocess.run(docmd, stdout=subprocess.PIPE, stderr=None, shell=True, text=True)
+    return r
+
+def perrorexit(emsg):
+    raise SystemExit(emsg)
+
+editions = { "raspios_lite_armhf":{"arch":"armhf", "ver":"-lite"},\
+            "raspios_lite_arm64":{"arch":"arm64", "ver":"-lite"},\
+            "raspios_armhf":{"arch":"armhf", "ver":""},\
+            "raspios_arm64":{"arch":"arm64", "ver":""},\
+            "raspios_full_armhf":{"arch":"armhf", "ver":"-full"},\
+            "raspios_full_arm64":{"arch":"arm64", "ver":"-full"}}
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--date",     help="Check for newer than this")
+parser.add_argument("--edition",  help="RasPiOS spec [D:raspios_arm64]")
+parser.add_argument("--mailfrom", help="Who to send the mail from")
+parser.add_argument("--mailto",   help="Who to send the mail to")
+parser.add_argument("--logger",   help="Log summary to system journal", action='store_true')
+parser.add_argument("--update",   help="Update /usr/local/etc/piwatch if --date specified", action='store_true')
+parser.add_argument("--verbose",  help="Print more logging information", action='store_true')
+args = parser.parse_args()
+
+if args.date is None or args.date == "":
+    if os.path.exists("/usr/local/etc/piwatch"):
+        with open("/usr/local/etc/piwatch", 'r') as f:
+            lastdate = f.read().strip()
+    else:
+        lastdate = ""
+        #perrorexit("? No /usr/local/etc/piwatch and no date argument specified")
+else:
+    lastdate = args.date
+
+mailfrom = "" if args.mailfrom is None else args.mailfrom
+mailto = "" if args.mailto is None else args.mailto
+
+edition = "raspios_arm64" if args.edition is None else args.edition
+edition = edition.replace('-', '_')
+if not edition in editions:
+    perrorexit("? Unrecognized edition {}".format(edition))
+
+arch = editions[edition]['arch']
+ver = editions[edition]['ver']
+
+if args.verbose:
+    print(" Finding xzIMG directory for {}".format(edition))
+    
+r = dosystem("curl -s https://downloads.raspberrypi.org/{}/images/".format(edition))
+if r.returncode != 0: perrorexit("? curl error {}".format(r.returncode))
+latest = ""
+#
+# Find latest image directory
+#
+for line in r.stdout.split("\n"):
+    if edition in line and "[DIR]" in line:
+        words = line.split("href=")
+        words = words[1].split('>')
+        words = words[1].split('<')
+        thisdate = words[0].strip('/').lstrip("{}-".format(edition)) # Get yyyy-mm-dd
+        if thisdate > latest:
+            latest = thisdate
+#
+# Find latest IMG
+#
+if args.verbose:
+    print(" Finding xzIMG for {}-raspios-{}{}".format(latest, arch, ver))
+
+r = dosystem("curl -s https://downloads.raspberrypi.org/{}/images/{}-{}/".format(edition, edition, latest))
+if r.returncode != 0: perrorexit("? curl error {}".format(r.returncode))
+imgnamex = "{}{}.img.xz".format(arch, ver)
+for line in r.stdout.split("\n"):
+    if imgnamex in line:
+        words = line.split("href=")
+        words = words[1].split('>')
+        words = words[1].split('<')
+        newdate = words[0][0:10]    # Get yyyy-mm-dd
+        break
+#
+# If IMG date <= last known date then we're done
+#
+if newdate <= lastdate:
+    exit(4)
+#
+# There is a new version. If emailing, include the release notes
+# Log in system log if --logger
+# Exit status 0 indicates new release available
+#
+if newdate == latest:
+    vdate = newdate   # Directory and IMG have same date
+else:
+    vdate = "{} (dir) {} (img)".format(latest, newdate) # Directory and IMG have different dates
+#
+# Get release notes
+#
+if not (mailfrom == "" or mailto == ""):
+    rnurl = "https://downloads.raspberrypi.org/{}/release_notes.txt".format(edition)
+    r = dosystem("curl -s {}".format(rnurl))
+    if r.returncode != 0: perrorexit("? curl error {}".format(r.returncode))
+    #
+    # Read through the release notes and get the notes for the latest release
+    #
+    of = tempfile.NamedTemporaryFile(mode='w')
+    of.write('New RasPiOS Available: {}\n\n'.format(vdate))
+    of.write('Change Log [{}]\n\n'.format(rnurl))
+    newdate2 = ""
+    # Read/write lines from the Release Notes until the line with the previous version date is found
+    for line in r.stdout.split("\n"):
+        if newdate2 == "":
+            newdate2 = line.strip(':')
+            if newdate2 != newdate:
+                if args.logger: dosystem('logger "? piwatch: Release Notes problem: newdate2 ({}) != newdate ({})"'.format(newdate2, newdate))
+                print("? Problem: newdate2 ({}) != newdate ({})".format(newdate2, newdate))
+                exit(1)
+        else:
+            tline = line.strip(':')
+            try:
+                dt = datetime.datetime.strptime(tline, "%Y-%m-%d")
+            except ValueError:
+                of.write("{}\n".format(line))
+            else:
+                break
+    of.seek(0)
+    dosystem('mail -s "New RasPiOS {} available [{}]" -r "{}" {} < {}'.format(edition, vdate, mailfrom, mailto, of.name))
+    if r.returncode != 0: perrorexit("? mail command error {}".format(r.returncode))
+    of.close
+
+if args.logger: dosystem('logger "piwatch: New RasPiOS {} available [{}]"'.format(edition, vdate))
+
+if args.date is None or args.update:
+    with open("/usr/local/etc/piwatch", 'w') as f:
+        f.write("{}\n".format(newdate))
+exit(0)
