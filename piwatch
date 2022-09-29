@@ -158,7 +158,7 @@ if not (mailfrom == "" or mailto == ""):
     # Read through the release notes and get the notes for the latest release
     #
     of = tempfile.NamedTemporaryFile(mode='w')
-    of.write('New RasPiOS Available: {}\n\n'.format(vdate))
+    of.write('New RasPiOS {} Available: {}\n\n'.format(edition, vdate))
     of.write('Change Log [{}]\n\n'.format(rnurl))
     newdate2 = ""
     # Read/write lines from the Release Notes until the line with the previous version date is found
