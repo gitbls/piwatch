@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #
-# V1.0
+# V1.1
 #
 # Check if there's a newer RasPiOS edition and notify if so
 #
@@ -12,8 +12,8 @@
 # Switches (all optional)
 #
 #    --date yyyy-mm-dd
-#      * Check for new editions after given date. If not specified, date in /usr/local/etc/piwatch is used.
-#        If --date is specified, /usr/local/etc/piwatch will not be updated unless --update
+#      * Check for new editions after given date. If not specified, date in ~/.config/piwatch is used.
+#        If --date is specified, ~/.config/piwatch will not be updated unless --update
 #    --edition name
 #      * Name of edition to check
 #    --mailfrom email-from-address
@@ -25,35 +25,38 @@
 #    --logger
 #      * Log to the system log if there is an update
 #    --update
-#      * Update /usr/local/etc/piwatch even if --date was specified
+#      * Update ~/.config/piwatch even if --date was specified
 #    --verbose
 #      * Print some extra goop on the console
 #
-# Typical use:
+# Example:
 #
-#  Check for update, send mail if there's an update 
+#  Check for update, send mail if there's an update and update ~/.config/piwatch
 #    piwatch --mailfrom myemail@domain.com --mailto myemail.domain.com
 #
-#  Check for update, log in the system log if there is one
+#  Check for update, log in the system log if there is one and update ~/.config/piwatch
 #    piwatch --logger
 #
-#  Check for update, report on console only, and update /usr/local/etc/piwatch
+#  Check for update, report on console only, and update ~/.config/piwatch
 #   piwatch --update --date 2022-09-24
 #
-#  Check for update and exit with status (0: new update, 4: no new update, 1: error)
+#  Check for update, report on console only, and do not update ~/.config/piwatch
+#   piwatch --date 2022-09-24
+#
+#  Check for update and exit with status (0: new update, 4: no new update, 1: error) and update ~/.config/piwatch
 #   piwatch
 #
-#  In all cases, exit status:
+#  In all cases, exit status is:
 #   0: Updated IMGs available
 #   1: Some sort of error
 #   4: No updated IMG available
 #
 import argparse
 import datetime
-import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 def dosystem(docmd):
     r = subprocess.run(docmd, stdout=subprocess.PIPE, stderr=None, shell=True, text=True)
@@ -61,6 +64,9 @@ def dosystem(docmd):
 
 def perrorexit(emsg):
     raise SystemExit(emsg)
+
+lastdatefile = "~/.config/piwatch/piwatch"
+lastfn = Path(lastdatefile).expanduser()
 
 editions = { "raspios_lite_armhf":{"arch":"armhf", "ver":"-lite"},\
             "raspios_lite_arm64":{"arch":"arm64", "ver":"-lite"},\
@@ -75,17 +81,16 @@ parser.add_argument("--edition",  help="RasPiOS spec [D:raspios_arm64]")
 parser.add_argument("--mailfrom", help="Who to send the mail from")
 parser.add_argument("--mailto",   help="Who to send the mail to")
 parser.add_argument("--logger",   help="Log summary to system journal", action='store_true')
-parser.add_argument("--update",   help="Update /usr/local/etc/piwatch if --date specified", action='store_true')
+parser.add_argument("--update",   help="Update ~/.config/piwatch if --date specified", action='store_true')
 parser.add_argument("--verbose",  help="Print more logging information", action='store_true')
 args = parser.parse_args()
 
 if args.date is None or args.date == "":
-    if os.path.exists("/usr/local/etc/piwatch"):
-        with open("/usr/local/etc/piwatch", 'r') as f:
+    if Path.exists(lastfn):
+        with open(lastfn, 'r') as f:
             lastdate = f.read().strip()
     else:
         lastdate = ""
-        #perrorexit("? No /usr/local/etc/piwatch and no date argument specified")
 else:
     lastdate = args.date
 
@@ -100,8 +105,7 @@ if not edition in editions:
 arch = editions[edition]['arch']
 ver = editions[edition]['ver']
 
-if args.verbose:
-    print(" Finding xzIMG directory for {}".format(edition))
+if args.verbose: print(" Finding xzIMG directory for {}".format(edition))
     
 r = dosystem("curl -s https://downloads.raspberrypi.org/{}/images/".format(edition))
 if r.returncode != 0: perrorexit("? curl error {}".format(r.returncode))
@@ -120,8 +124,7 @@ for line in r.stdout.split("\n"):
 #
 # Find latest IMG
 #
-if args.verbose:
-    print(" Finding xzIMG for {}-raspios-{}{}".format(latest, arch, ver))
+if args.verbose: print(" Finding xzIMG for {}-raspios-{}{}".format(latest, arch, ver))
 
 r = dosystem("curl -s https://downloads.raspberrypi.org/{}/images/{}-{}/".format(edition, edition, latest))
 if r.returncode != 0: perrorexit("? curl error {}".format(r.returncode))
@@ -168,7 +171,8 @@ if not (mailfrom == "" or mailto == ""):
             if newdate2 != newdate:
                 if args.logger: dosystem('logger "? piwatch: Release Notes problem: newdate2 ({}) != newdate ({})"'.format(newdate2, newdate))
                 print("? Problem: newdate2 ({}) != newdate ({})".format(newdate2, newdate))
-                exit(1)
+                break
+
         else:
             tline = line.strip(':')
             try:
@@ -185,6 +189,7 @@ if not (mailfrom == "" or mailto == ""):
 if args.logger: dosystem('logger "piwatch: New RasPiOS {} available [{}]"'.format(edition, vdate))
 
 if args.date is None or args.update:
-    with open("/usr/local/etc/piwatch", 'w') as f:
+    Path(lastfn).parent.mkdir(parents=True, exist_ok=True)
+    with open(lastfn, 'w') as f:
         f.write("{}\n".format(newdate))
 exit(0)
